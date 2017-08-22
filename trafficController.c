@@ -14,7 +14,7 @@
 #include <ctype.h>
 
 // A template for COMPSYS 303 Assignment 1
-//
+
 // NOTE: You do not need to use this! Feel free
 // to write your own code from scratch if you
 // want, this is purely an example
@@ -162,8 +162,6 @@ void handle_mode_button(unsigned int* taskid)
  */
 void simple_tlc(int* state)
 {
-	alt_alarm timer;
-	int *trigger = 0;
 	void *context;
 
 	if (*state == -1) {
@@ -173,28 +171,32 @@ void simple_tlc(int* state)
 		return;
 	}
 	
-	// If the timeout has occured
 	if(*state == 0) {
 		//Start timer for state 0
-		context = (void*) trigger;
-		alt_alarm_start(&timer, timeout[state], tlc_timer_isr, context);
-		do_led(traffic_lights[state]);
-		state++;
+		context = (void*) &tlc_timer_event;
+		alt_alarm_start(&tlc_timer, timeout[*state], tlc_timer_isr, context);
+		do_led(traffic_lights[*state]);
+		(*state)++;
 		return;
 	}
 
-	while(1) {
-		if(*trigger == 1) {
-			*trigger = 0;
-			//Process state
-			alt_alarm_start(&timer, timeout[state], tlc_timer_isr, context);
-			do_led(traffic_lights[state]);
-			//Increment state counter
-			state++;
-		}
-	}
-
-
+    while(1) {
+        // If the timeout has occured
+        if(*trigger == 1) {
+            *trigger = 0;
+            //Process state
+            alt_alarm_start(&timer, timeout[*state], tlc_timer_isr, context);
+            do_led(traffic_lights[*state]);
+            //Increment state counter
+            (*state)++;
+            //TODO: Handle mode change like this?
+            //return
+        }
+        //TODO: Handle mode changed during runtime
+        if(modeChanged) {
+            lcd_set_mode(newMode);
+        }
+    }
 }
 
 void do_led(char lightState) {
@@ -233,7 +235,13 @@ alt_u32 tlc_timer_isr(void* context)
 void init_buttons_pio(void)
 {
 	// Initialize NS/EW pedestrian button		
+    int buttonValue = 1;
+    void *buttonIsrContext = (void*) &buttonValue;
 	// Reset the edge capture register
+    IOWR_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE, 0);
+    // Enable interrupts for key 0 and key 1
+    IOWR_ALTERA_AVALON_PIO_IRQ_MASK(BUTTONS_BASE, 0x3);
+    alt_irq_register(BUTTONS_IRQ, buttonIsrContext, NSEW_ped_isr);
 	
 }
 
@@ -253,7 +261,44 @@ void pedestrian_tlc(int* state)
 	
 	// Same as simple TLC
 	// with additional states / signals for Pedestrian crossings
-	
+	if(*state == 0) {
+		//Start timer for state 0
+		context = (void*) &tlc_timer_event;
+		alt_alarm_start(&tlc_timer, timeout[*state], tlc_timer_isr, context);
+		do_led(traffic_lights[*state]);
+		(*state)++;
+		return;
+	}
+
+    while(1) {
+        // If the timeout has occured
+        if(*trigger == 1) {
+            *trigger = 0;
+            //Process state
+            if(*state == 1 && pedestrianNS) {
+                // Also turn on pedestrian NS light (Bit 6 of LEDS_GREEN)
+                do_led(0x80);
+                pedestrianNS = 0;
+            }
+            if(*state == 4 && pedestrianEW) {
+                // Also turn on pedestrian EW light (Bit 7 of LEDS_GREEN)
+                do_led(0x40);
+                pedestrianEW = 0;
+            }
+            alt_alarm_start(&timer, timeout[*state], tlc_timer_isr, context);
+            do_led(traffic_lights[*state]);
+            //Increment state counter
+            if(*state == 5) {
+                *state = 0;
+            } else {
+                (*state)++;
+            }
+        }
+        //TODO: Handle mode changed during runtime
+        if(modeChanged) {
+            lcd_set_mode(newMode);
+        }
+    }
 	
 }
 
@@ -267,7 +312,17 @@ void NSEW_ped_isr(void* context, alt_u32 id)
 {
 	// NOTE:
 	// Cast context to volatile to avoid unwanted compiler optimization.
+    int *temp = (int*) context;
 	// Store the value in the Button's edge capture register in *context
+    (*temp) = IORD_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE);
+    if(*temp == 1) {
+        pedestrianNS = 1;
+    } else if(*temp == 2) {
+        pedestrianEW = 1;
+    }
+    //Clear edge Capture Register
+    IOWR_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE, 0);
+    printf("Button: %i\n", *temp);
 	
 	
 }
