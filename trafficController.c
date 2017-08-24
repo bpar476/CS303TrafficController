@@ -42,6 +42,7 @@ void handle_mode_button(unsigned int* taskid);
 void handle_vehicle_button(void);
 void init_buttons_pio(void);
 void NSEW_ped_isr(void* context, alt_u32 id);
+void do_led(char lightState);
 
 // Red light Camera
 void clear_vehicle_detected(void);
@@ -102,7 +103,7 @@ FILE* fp;
 //static unsigned char traffic_lights[TIMEOUT_NUM] = {0x90, 0x50, 0x30, 0x90, 0x88, 0x84};
 // NS RGY | EW RGY
 // NR,NG | NY,ER,EG,EY
-static unsigned char traffic_lights[TIMEOUT_NUM] = {0x24, 0x14, 0x0C, 0x24, 0x22, 0x21};
+static unsigned char traffic_lights[TIMEOUT_NUM] = {0x24, 0x21, 0x22, 0x24, 0x0C, 0x14};
 
 enum traffic_states {RR0, GR, YR, RR1, RG, RY};
 
@@ -144,25 +145,15 @@ void buttons_driver(int* button)
 		// call handle_mode_button()
 }
 
-
-/* DESCRIPTION: Updates the ID of the task to be executed and the 7-segment display
- * PARAMETER:   taskid - current task ID
- * RETURNS:     none
- */
-void handle_mode_button(unsigned int* taskid)
-{
-	// Increment mode
-	// Update Mode-display
-}
-
-
 /* DESCRIPTION: Simple traffic light controller
  * PARAMETER:   state - state of the controller
  * RETURNS:     none
  */
 void simple_tlc(int* state)
 {
-	void *context;
+	static int started = -1;
+	void *context = (void*) &tlc_timer_event;
+	int *trigger;
 
 	if (*state == -1) {
 		// Process initialization state
@@ -171,46 +162,39 @@ void simple_tlc(int* state)
 		return;
 	}
 	
-	if(*state == 0) {
+	if(*state == 0 && started == -1) {
 		//Start timer for state 0
-		context = (void*) &tlc_timer_event;
 		alt_alarm_start(&tlc_timer, timeout[*state], tlc_timer_isr, context);
 		do_led(traffic_lights[*state]);
-		(*state)++;
+		started = 1;
 		return;
 	}
+
+	trigger = (int*) context;
 
     while(1) {
         // If the timeout has occured
         if(*trigger == 1) {
+        	//Increment state counter
+        	 if(*state == 5) {
+        		 //Go back to state 0 when cycle completed
+        		 *state = 0;
+            } else {
+            	(*state)++;
+        	}
             *trigger = 0;
             //Process state
-            alt_alarm_start(&timer, timeout[*state], tlc_timer_isr, context);
+            alt_alarm_start(&tlc_timer, timeout[*state], tlc_timer_isr, context);
+            printf("Doing LED's for state: %d\n", *state);
             do_led(traffic_lights[*state]);
-            //Increment state counter
-            (*state)++;
-            //TODO: Handle mode change like this?
-            //return
-        }
-        //TODO: Handle mode changed during runtime
-        if(modeChanged) {
-            lcd_set_mode(newMode);
+
+            return;
         }
     }
 }
 
 void do_led(char lightState) {
-	int i;
-	unsigned char mask;
-	//For each bit in lightState, check if that light should be on
-	for(i = 0; i < TIMEOUT_NUM; i++) {
-		mask = 1 << i;
-		if((lightState & mask) > 0) {
-			//Light up this LED
-			IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, i + 1);
-		}
-	}
-
+	IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, lightState);
 	return;
 }
 
@@ -252,51 +236,56 @@ void init_buttons_pio(void)
  */
 void pedestrian_tlc(int* state)
 {	
+	void *context = (void*) &tlc_timer_event;
+	int *trigger;
+	static int started = -1;
+
 	if (*state == -1) {
 		// Process initialization state
 		init_tlc();
 		(*state)++;
 		return;
 	}
-	
-	// Same as simple TLC
-	// with additional states / signals for Pedestrian crossings
-	if(*state == 0) {
+
+	if(*state == 0 && started == -1) {
 		//Start timer for state 0
-		context = (void*) &tlc_timer_event;
 		alt_alarm_start(&tlc_timer, timeout[*state], tlc_timer_isr, context);
 		do_led(traffic_lights[*state]);
-		(*state)++;
+		started = 1;
 		return;
 	}
+
+	trigger = (int*) context;
 
     while(1) {
         // If the timeout has occured
         if(*trigger == 1) {
+        	if(*state == 5) {
+        		*state = 0;
+        	} else {
+        	    (*state)++;
+        	}
             *trigger = 0;
             //Process state
             if(*state == 1 && pedestrianNS) {
                 // Also turn on pedestrian NS light (Bit 6 of LEDS_GREEN)
-                do_led(0x80);
+//            	printf("State is 1 and pedestrian has queried\n");
+                do_led(traffic_lights[*state] | 0x040);
                 pedestrianNS = 0;
-            }
-            if(*state == 4 && pedestrianEW) {
+            } else if(*state == 4 && pedestrianEW) {
                 // Also turn on pedestrian EW light (Bit 7 of LEDS_GREEN)
-                do_led(0x40);
+//            	printf("State is 4 and pedestrian has queried\n");
+                do_led(traffic_lights[*state] | 0x080);
+//                printf("LED: %d\n", traffic_lights[*state] | 0x80);
                 pedestrianEW = 0;
-            }
-            alt_alarm_start(&timer, timeout[*state], tlc_timer_isr, context);
-            do_led(traffic_lights[*state]);
-            //Increment state counter
-            if(*state == 5) {
-                *state = 0;
             } else {
-                (*state)++;
+//            	printf("No pedestrians present\n");
+            	do_led(traffic_lights[*state]);
             }
-        }
-        //TODO: Handle mode changed during runtime
-        if(modeChanged) {
-            lcd_set_mode(newMode);
+        	alt_alarm_start(&tlc_timer, timeout[*state], tlc_timer_isr, context);
+            //Increment state counter
+
+            return;
         }
     }
 	
@@ -310,19 +299,17 @@ void pedestrian_tlc(int* state)
  */
 void NSEW_ped_isr(void* context, alt_u32 id)
 {
-	// NOTE:
-	// Cast context to volatile to avoid unwanted compiler optimization.
-    int *temp = (int*) context;
-	// Store the value in the Button's edge capture register in *context
-    (*temp) = IORD_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE);
-    if(*temp == 1) {
+    int temp;
+    temp = IORD_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE);
+    //Do bit reading instead of equality
+    if(temp & 0x01) {
         pedestrianNS = 1;
-    } else if(*temp == 2) {
+    } else if(temp & 0x02) {
         pedestrianEW = 1;
     }
     //Clear edge Capture Register
     IOWR_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE, 0);
-    printf("Button: %i\n", *temp);
+//    printf("Button: %i\n", temp);
 	
 	
 }
@@ -467,24 +454,51 @@ int is_vehicle_left(void)
 
 int main(void)
 {	
-	int buttons = 0;			// status of mode button
-	// initialize lcd
+	int switchState = 0;
+	int i;
+	char mask;
+	int tempMode;
+	// initialise lcd
 	lcd = fopen(LCD_NAME, "w");
 	lcd_set_mode(0);
 	init_buttons_pio();			// initialize buttons
+	mode = 0;
 	while (1) {
+//		printf("Hello world\n");
 		// Button detection & debouncing
+//		printf("Switch State: %i\n", switchState);
+//		printf("Proc state: %d\n", proc_state[0]);
+//		printf("\n");
+
 		
-		// if Mode button pushed:
+		// if Mode button pushed and we are in a safe state (RR or Uninitialised)
+		if(proc_state[mode] == 0 || proc_state[mode] == 3 || proc_state[mode] == -1) {
+			switchState = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+			for(i = 0; i < 4; i++){
+				mask = 1 << i;
+				if(mask & switchState) {
+					tempMode = i;
+					if(tempMode != mode) {
+						//Timer does not get REstarted when we go back to a tlc in mode -1
+						proc_state[mode] = -1;
+						alt_alarm_stop(&tlc_timer);
+						mode = tempMode;
+					}
+					break;
+				}
+			}
+		}
 			// Set current TLC state to -1
 			// handle_mode_button to change state & display
 		// if Car button pushed...
 			// handle_vehicle_button
     	
 		// Execute the correct TLC
+		lcd_set_mode(mode + 1);
     	switch (mode) {
 			case 0:
 				simple_tlc(&proc_state[0]);
+//				printf("After proc state: %d\n", proc_state[0]);
 				break;
 			case 1:
 				pedestrian_tlc(&proc_state[1]);
